@@ -135,32 +135,22 @@ jobs:
           
           echo "Signing complete"
 
+      - name: Create IPA from Signed Archive
+        run: |
+          echo "Creating IPA from signed archive..."
+          mkdir -p /tmp/LFX-export/Payload
+          cp -r /tmp/LFX.xcarchive/Products/Applications/App.app /tmp/LFX-export/Payload/
+          
+          cd /tmp/LFX-export
+          zip -r -q LFX-iOS.ipa Payload
+          
+          echo "✅ IPA created"
+          ls -lh LFX-iOS.ipa
+
       - name: Export IPA for App Store
         run: |
-          cat > /tmp/ExportOptions.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store</string>
-              <key>teamID</key>
-              <string>${{ secrets.IOS_TEAM_ID }}</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>com.lfx.jewelry</key>
-                  <string>lfx_distribution</string>
-              </dict>
-          </dict>
-          </plist>
-          EOF
-          
-          xcodebuild -exportArchive \
-            -archivePath /tmp/LFX.xcarchive \
-            -exportPath /tmp/LFX-export \
-            -exportOptionsPlist /tmp/ExportOptions.plist
+          echo "Skipping xcodebuild export (already signed manually)"
+          # IPA already created in previous step
 
       - name: Upload to App Store Connect
         if: ${{ inputs.upload_to_testflight }}
