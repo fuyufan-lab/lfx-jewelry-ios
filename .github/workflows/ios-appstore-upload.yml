@@ -94,28 +94,46 @@ jobs:
           cd ios/App
           pod install
 
-      - name: Build Archive with Distribution Signing
+      - name: Build Archive (Unsigned)
         run: |
           cd ios/App
+          echo "Building archive without signing..."
           xcodebuild -workspace App.xcworkspace \
             -scheme App \
             -sdk iphoneos \
             -configuration Release \
             -archivePath /tmp/LFX.xcarchive \
-            CODE_SIGN_IDENTITY="${{ steps.cert.outputs.uuid }}" \
-            CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="LFX Distribution" \
-            archive || {
-              echo "Archive with manual signing failed, trying automatic..."
-              xcodebuild -workspace App.xcworkspace \
-                -scheme App \
-                -sdk iphoneos \
-                -configuration Release \
-                -archivePath /tmp/LFX.xcarchive \
-                CODE_SIGN_IDENTITY="${{ steps.cert.outputs.uuid }}" \
-                CODE_SIGN_STYLE=Automatic \
-                archive
+            CODE_SIGNING_ALLOWED=NO \
+            archive 2>&1 || {
+              echo "Build failed, checking what's wrong..."
+              exit 1
             }
+          echo "Archive created successfully"
+          ls -la /tmp/LFX.xcarchive/Products/Applications/
+
+      - name: Sign Archive with Distribution Certificate
+        run: |
+          APP_PATH="/tmp/LFX.xcarchive/Products/Applications/App.app"
+          CERT_UUID="${{ steps.cert.outputs.uuid }}"
+          PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/lfx_distribution.mobileprovision"
+          
+          echo "Signing with certificate: $CERT_UUID"
+          
+          # Copy provisioning profile into app
+          cp "$PROFILE_PATH" "$APP_PATH/embedded.mobileprovision"
+          
+          # Sign frameworks first
+          echo "Signing frameworks..."
+          find "$APP_PATH" -name "*.framework" -type d -exec codesign --force --sign "$CERT_UUID" --timestamp=none {} \; || true
+          
+          # Sign the app
+          echo "Signing app..."
+          codesign --force --sign "$CERT_UUID" --timestamp=none "$APP_PATH" 2>&1 || {
+            echo "Manual codesign failed"
+            exit 1
+          }
+          
+          echo "Signing complete"
 
       - name: Export IPA for App Store
         run: |
