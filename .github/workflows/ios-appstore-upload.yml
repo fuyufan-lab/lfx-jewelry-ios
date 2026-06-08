@@ -104,8 +104,18 @@ jobs:
             -archivePath /tmp/LFX.xcarchive \
             CODE_SIGN_IDENTITY="${{ steps.cert.outputs.uuid }}" \
             CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="lfx_distribution" \
-            archive
+            PROVISIONING_PROFILE_SPECIFIER="LFX Distribution" \
+            archive || {
+              echo "Archive with manual signing failed, trying automatic..."
+              xcodebuild -workspace App.xcworkspace \
+                -scheme App \
+                -sdk iphoneos \
+                -configuration Release \
+                -archivePath /tmp/LFX.xcarchive \
+                CODE_SIGN_IDENTITY="${{ steps.cert.outputs.uuid }}" \
+                CODE_SIGN_STYLE=Automatic \
+                archive
+            }
 
       - name: Export IPA for App Store
         run: |
