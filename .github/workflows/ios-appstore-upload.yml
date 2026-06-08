@@ -1,0 +1,157 @@
+name: iOS App Store Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: '上传到 TestFlight'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-and-upload:
+    name: Build and Upload to App Store Connect
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Create www directory
+        run: |
+          mkdir -p www
+          cat > www/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>LFX 珠宝内容</title>
+            <script>
+              window.location.href = 'https://yh.xiaofenhe.com/lfx-preview/入口页.html';
+            </script>
+          </head>
+          <body>
+            <p>加载中...</p>
+          </body>
+          </html>
+          EOF
+
+      - name: Capacitor Sync
+        run: npx cap sync ios
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Import Distribution Certificate
+        env:
+          DIST_CERT_P12: ${{ secrets.IOS_DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+        run: |
+          echo "$DIST_CERT_P12" | base64 -d > /tmp/dist_certificate.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import /tmp/dist_certificate.p12 -k build.keychain -P "$DIST_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/xcodebuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+
+      - name: Install Provisioning Profile
+        env:
+          PROVISIONING_PROFILE: ${{ secrets.IOS_DIST_PROVISIONING_PROFILE }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROVISIONING_PROFILE" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/lfx_distribution.mobileprovision
+
+      - name: Get Distribution Certificate UUID
+        id: cert
+        run: |
+          CERT_INFO=$(security find-identity -v -p codesigning build.keychain 2>&1)
+          echo "--- All identities ---"
+          echo "$CERT_INFO"
+          
+          CERT_UUID=$(echo "$CERT_INFO" | grep -i "Distribution" | head -1 | awk '{print $2}')
+          
+          if [ -z "$CERT_UUID" ]; then
+            echo "Error: No Distribution certificate found"
+            exit 1
+          fi
+          echo "uuid=$CERT_UUID" >> $GITHUB_OUTPUT
+          echo "Distribution Certificate UUID: $CERT_UUID"
+
+      - name: Install CocoaPods
+        run: |
+          cd ios/App
+          pod install
+
+      - name: Build Archive with Distribution Signing
+        run: |
+          cd ios/App
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath /tmp/LFX.xcarchive \
+            CODE_SIGN_IDENTITY="${{ steps.cert.outputs.uuid }}" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="lfx_distribution" \
+            archive
+
+      - name: Export IPA for App Store
+        run: |
+          cat > /tmp/ExportOptions.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>teamID</key>
+              <string>${{ secrets.IOS_TEAM_ID }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.lfx.jewelry</key>
+                  <string>lfx_distribution</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+          
+          xcodebuild -exportArchive \
+            -archivePath /tmp/LFX.xcarchive \
+            -exportPath /tmp/LFX-export \
+            -exportOptionsPlist /tmp/ExportOptions.plist
+
+      - name: Upload to App Store Connect
+        if: ${{ inputs.upload_to_testflight }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          echo "Uploading to App Store Connect..."
+          /Applications/Xcode.app/Contents/Developer/usr/bin/altool \
+            --upload-app \
+            -f /tmp/LFX-export/*.ipa \
+            -t ios \
+            -u "$APPLE_ID" \
+            -p "$APPLE_APP_PASSWORD"
+          echo "✅ Upload complete!"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LFX-iOS-AppStore.ipa
+          path: /tmp/LFX-export/*.ipa
+          retention-days: 30
